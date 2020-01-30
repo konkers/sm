@@ -6,7 +6,6 @@ macro_rules! rom_addr {
 }
 
 pub const ROOM_MDB_START: usize = rom_addr!(0x8f, 0x91f8);
-pub const ROOM_MDB_ELEMENT_SIZE: usize = 0xBB;
 
 #[cfg(test)]
 mod tests {
