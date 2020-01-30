@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! rom_addr {
     ($bank:expr, $offset:expr) => {
-        ((($bank - 0x80) << 15) + ($offset - 0x8000)) as usize
+        ((($bank - 0x80) << 15) as usize + ($offset - 0x8000) as usize)
     };
 }
 

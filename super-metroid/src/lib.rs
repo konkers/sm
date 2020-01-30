@@ -1,11 +1,14 @@
+pub mod rommap;
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use failure::{format_err, Error};
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
+use serde::Serialize;
+use serde_hex::{CompactPfx, SerHex};
 
-pub mod rommap;
-
-#[derive(Debug, FromPrimitive)]
+#[derive(Debug, FromPrimitive, Serialize)]
+#[repr(u8)]
 pub enum Area {
     Crateria = 0x00,
     Brinstar = 0x01,
@@ -17,6 +20,95 @@ pub enum Area {
     Debug = 0x07,
 }
 
+#[derive(Debug, FromPrimitive, PartialEq, Serialize)]
+#[repr(u8)]
+pub enum Event {
+    ZebesAwake = 0x00,
+    SuperMetroidAteSideHopper = 0x01,
+    MotherBrainGlassBroken = 0x02,
+    Zebetite1Destroyed = 0x03,
+    Zebetite2Destroyed = 0x04,
+    Zebetite3Destroyed = 0x05,
+    PhantoonStatueGrey = 0x06,
+    RidleyStatueGrey = 0x07,
+    DraygonStatueGrey = 0x08,
+    KraidStatueGrey = 0x09,
+    TourianUnlocked = 0x0a,
+    MaridiaTubeBroken = 0x0b,
+    LowerNorfairAcidLowered = 0x0c,
+    ShaktoolPathClear = 0x0d,
+    ZebesTimeBombSet = 0x0e,
+    AnimalsSaved = 0x0f,
+    FirstMetroidHallClear = 0x10,
+    FirstMetroidShaftClear = 0x11,
+    SecondMetroidHallClear = 0x12,
+    SecondMetroidShaftClear = 0x13,
+    Unused = 0x14,
+    OutranSpeedBoosterLavaQuake = 0x15,
+}
+
+#[derive(Debug, FromPrimitive, Serialize)]
+#[repr(u16)]
+pub enum StateConditionValue {
+    Default = 0xe5e6,
+    DoorPointerIs = 0xe5eb,
+    MainAreaBossDead = 0xe5ff,
+    EventSet = 0xe612,
+    AreaBossesDead = 0xe629,
+    HasMorphBall = 0xe640,
+    HasMorphBallAndMissiles = 0xe652,
+    HasPowerBombs = 0xe669,
+    HasSpeedBooster = 0xe678,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+pub enum StateCondition {
+    Default,
+    DoorPointerIs { value: u16 },
+    MainAreaBossDead,
+    EventSet { event: Event },
+    AreaBossesDead { bosses: u8 }, // 0x1 == main boss, 0x2 == mini boss, 0x4 = torizo.
+    HasMorphBall,
+    HasMorphBallAndMissiles,
+    HasPowerBombs,
+    HasSpeedBooster,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StateData {
+    #[serde(with = "SerHex::<CompactPfx>")]
+    level_data: u32,
+    tile_set: u8,
+    music_data_index: u8,
+    music_track: u8,
+    #[serde(with = "SerHex::<CompactPfx>")]
+    fx_ptr: u16, // Bank $83
+    #[serde(with = "SerHex::<CompactPfx>")]
+    enemy_population: u16, // bank $a1
+    #[serde(with = "SerHex::<CompactPfx>")]
+    enemy_set: u16, // bank $b4
+    layer_2_scroll_x: u8,
+    layer_2_scroll_y: u8,
+    #[serde(with = "SerHex::<CompactPfx>")]
+    scroll_ptr: u16, // bank $8f?
+    #[serde(with = "SerHex::<CompactPfx>")]
+    x_ray_block_ptr: u16, // bank ??
+    #[serde(with = "SerHex::<CompactPfx>")]
+    main_asm_ptr: u16, // bank ??
+    plm_ptr: u16, // bank ??
+    #[serde(with = "SerHex::<CompactPfx>")]
+    bg_ptr: u16, // bank ??
+    #[serde(with = "SerHex::<CompactPfx>")]
+    setup_asm_ptr: u16, // bank ??
+}
+
+#[derive(Debug, Serialize)]
+pub struct State {
+    pub condition: StateCondition,
+    pub data: StateData,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RoomMdb {
     pub index: u8,
     pub area: Area,
@@ -27,42 +119,23 @@ pub struct RoomMdb {
     pub up_scroller: u8,
     pub down_scroller: u8,
     pub graphics_flags: u8,
-    pub door_out_ptr: u16,
-    pub room_state_used: u16,
-    pub level_data_ptr: u32,
-    pub tile_set_used: u8,
-    pub music_collection: u8,
-    pub music_play: u8,
-    pub fx1_ptr: u16,
-    pub enemy_population_ptr: u16,
-    pub enemy_set_ptr: u16,
-    pub layer_2_scrolling: u16,
-    pub scroll_ptr: u16,
-    pub unknown: u16,
-    pub fx2_ptr: u16,
-    pub plm_ptr: u16,
-    pub bg_data: u16,
-    pub later1_2: u16,
+    #[serde(with = "SerHex::<CompactPfx>")]
+    pub door_list_ptr: u16,
+
+    pub states: Vec<State>,
 }
 
+#[derive(Debug, Serialize)]
 pub struct SuperMetroidData {
     pub room_mdb: Vec<RoomMdb>,
 }
 
-fn load_room_mdb(data: &[u8]) -> Result<RoomMdb, Error> {
-    if data.len() < rommap::ROOM_MDB_ELEMENT_SIZE {
-        return Err(format_err!(
-            "Not enought data to read mdb entry. Expected {}, got {}",
-            rommap::ROOM_MDB_ELEMENT_SIZE,
-            data.len()
-        ));
-    }
-
+fn load_room_mdb_header(data: &[u8]) -> Result<RoomMdb, Error> {
     Ok(RoomMdb {
         // 00 - Room index
         index: data[0x00],
         // 01 - Room area
-        area: Area::from_u8(data[0x01]).unwrap(),
+        area: Area::from_u8(data[0x01]).ok_or(format_err!("unknown area type."))?,
         // 02 - X-position on mini-map
         x: data[0x02],
         // 03 - y-position on mini-map
@@ -78,38 +151,108 @@ fn load_room_mdb(data: &[u8]) -> Result<RoomMdb, Error> {
         // 08 - Special graphics bitflag
         graphics_flags: data[0x08],
         // 09 0a - Door out pointer
-        door_out_ptr: (&data[0x09..=0x0a]).read_u16::<LittleEndian>().unwrap(),
-        // 0b 0c - Roomstate used
-        room_state_used: (&data[0x0b..=0x0c]).read_u16::<LittleEndian>().unwrap(),
-        // 0d 0e 0f - Level data pointer
-        level_data_ptr: (&data[0x0d..=0x0f]).read_u24::<LittleEndian>().unwrap(),
-        // 10 - Tileset used
-        tile_set_used: data[0x10],
-        // 11 - Music: Collection
-        music_collection: data[0x11],
-        // 12 - Music: Play
-        music_play: data[0x12],
-        // 13 14 - FX1 pointer
-        fx1_ptr: (&data[0x13..=0x14]).read_u16::<LittleEndian>().unwrap(),
-        // 15 16 - Enemy Pop/Allowed pointer
-        enemy_population_ptr: (&data[0x15..=0x16]).read_u16::<LittleEndian>().unwrap(),
-        // 17 18 - Enemy Set pointer
-        enemy_set_ptr: (&data[0x17..=0x18]).read_u16::<LittleEndian>().unwrap(),
-        // 19 1a - Layer 2 scrolling
-        layer_2_scrolling: (&data[0x19..=0x1a]).read_u16::<LittleEndian>().unwrap(),
-        // 1b 1c - Scroll pointer
-        scroll_ptr: (&data[0x1b..=0x1c]).read_u16::<LittleEndian>().unwrap(),
-        // 1d 1e  - Unknown/RoomVar
-        unknown: (&data[0x1d..=0x1e]).read_u16::<LittleEndian>().unwrap(),
-        // 1f 20 - FX2 pointer
-        fx2_ptr: (&data[0x1f..=0x20]).read_u16::<LittleEndian>().unwrap(),
-        // 21 22 - PLM pointer
-        plm_ptr: (&data[0x21..=0x22]).read_u16::<LittleEndian>().unwrap(),
-        // 23 24 - BG_Data
-        bg_data: (&data[0x23..=0x24]).read_u16::<LittleEndian>().unwrap(),
-        // 25 26 - Later1_2 (FX0/Setup code)
-        later1_2: (&data[0x25..=0x26]).read_u16::<LittleEndian>().unwrap(),
+        door_list_ptr: (&data[0x09..=0x0a]).read_u16::<LittleEndian>()?,
+        states: Vec::new(),
     })
+}
+
+// State conditions are 2 bytes codes followed by 0, 1, or 2 bytes of parameter data.
+fn load_state_condition(data: &[u8], offset: usize) -> Result<(StateCondition, usize), Error> {
+    let condition_value_raw = (&data[offset..]).read_u16::<LittleEndian>()?;
+    let condition_value = StateConditionValue::from_u16(condition_value_raw).ok_or(format_err!(
+        "unknown state condition {:04x}",
+        condition_value_raw
+    ))?;
+
+    let offset = offset + 2;
+    Ok(match condition_value {
+        StateConditionValue::Default => (StateCondition::Default, offset),
+        StateConditionValue::DoorPointerIs => (
+            StateCondition::DoorPointerIs {
+                value: (&data[offset..]).read_u16::<LittleEndian>()?,
+            },
+            offset + 2,
+        ),
+        StateConditionValue::MainAreaBossDead => (StateCondition::MainAreaBossDead, offset),
+        StateConditionValue::EventSet => (
+            StateCondition::EventSet {
+                event: Event::from_u8(data[offset])
+                    .ok_or(format_err!("unknown event {:02x}", data[offset]))?,
+            },
+            offset + 1,
+        ),
+        StateConditionValue::AreaBossesDead => (
+            StateCondition::AreaBossesDead {
+                bosses: data[offset],
+            },
+            offset + 1,
+        ),
+        StateConditionValue::HasMorphBall => (StateCondition::HasMorphBall, offset),
+        StateConditionValue::HasMorphBallAndMissiles => {
+            (StateCondition::HasMorphBallAndMissiles, offset)
+        }
+        StateConditionValue::HasPowerBombs => (StateCondition::HasPowerBombs, offset),
+        StateConditionValue::HasSpeedBooster => (StateCondition::HasSpeedBooster, offset),
+    })
+}
+
+fn load_state_data(data: &[u8]) -> Result<StateData, Error> {
+    Ok(StateData {
+        level_data: (&data[0x0..]).read_u24::<LittleEndian>()?,
+        tile_set: data[0x3],
+        music_data_index: data[0x4],
+        music_track: data[0x5],
+        fx_ptr: (&data[0x6..]).read_u16::<LittleEndian>()?,
+        enemy_population: (&data[0x8..]).read_u16::<LittleEndian>()?,
+        enemy_set: (&data[0xa..]).read_u16::<LittleEndian>()?,
+        layer_2_scroll_x: data[0xc],
+        layer_2_scroll_y: data[0xd],
+        scroll_ptr: (&data[0xe..]).read_u16::<LittleEndian>()?,
+        x_ray_block_ptr: (&data[0x10..]).read_u16::<LittleEndian>()?,
+        main_asm_ptr: (&data[0x12..]).read_u16::<LittleEndian>()?,
+        plm_ptr: (&data[0x14..]).read_u16::<LittleEndian>()?,
+        bg_ptr: (&data[0x16..]).read_u16::<LittleEndian>()?,
+        setup_asm_ptr: (&data[0x18..]).read_u16::<LittleEndian>()?,
+    })
+}
+
+fn load_room_mdb(rom_data: &[u8], offset: usize) -> Result<RoomMdb, Error> {
+    let mut mdb = load_room_mdb_header(&rom_data[offset..])?;
+    let mut state_offset = offset + 0xb;
+
+    loop {
+        let (condition, new_offset) = load_state_condition(rom_data, state_offset)?;
+        state_offset = new_offset;
+
+        let (data_ptr, done) = match condition {
+            // The default condition's state data immediately follows the end of the
+            // end of the state condition list.  It also signifies the end of that
+            // list.
+            StateCondition::Default => (((state_offset & 0x7fff) + 0x8000) as u16, true),
+
+            // For all other conditions, the state data is pointed to by the next u16.
+            _ => (
+                {
+                    let ptr = (&rom_data[state_offset..]).read_u16::<LittleEndian>()?;
+                    state_offset += 2;
+                    ptr
+                },
+                false,
+            ),
+        };
+
+        let data_offset = rom_addr!(0x8f, data_ptr);
+        println!("{:x}", data_offset);
+        mdb.states.push(State {
+            condition: condition,
+            data: load_state_data(&rom_data[rom_addr!(0x8f, data_ptr)..])?,
+        });
+        if done {
+            break;
+        }
+    }
+
+    Ok(mdb)
 }
 
 pub fn load(rom_data: &[u8]) -> Result<SuperMetroidData, Error> {
@@ -119,7 +262,7 @@ pub fn load(rom_data: &[u8]) -> Result<SuperMetroidData, Error> {
 
     // TODO: verify checksum/crc/other hash.
 
-    let room_mdb = vec![load_room_mdb(&rom_data[rommap::ROOM_MDB_START..])?];
+    let room_mdb = vec![load_room_mdb(rom_data, rommap::ROOM_MDB_START)?];
 
     Ok(SuperMetroidData { room_mdb: room_mdb })
 }
