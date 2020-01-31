@@ -142,12 +142,12 @@ mod tests {
 
     #[test]
     fn test_word_fill_op() {
-        // Alligned
+        // Aligned
         assert_eq!(
             decompress(&[0x43, 0x55, 0xaa, 0xff]).unwrap(),
             vec![0x55, 0xaa, 0x55, 0xaa]
         );
-        // Unalligned
+        // Unaligned
         assert_eq!(
             decompress(&[0x44, 0x55, 0xaa, 0xff]).unwrap(),
             vec![0x55, 0xaa, 0x55, 0xaa, 0x55]

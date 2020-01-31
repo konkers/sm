@@ -1,5 +1,4 @@
 use failure::Error;
-use ron;
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -13,7 +12,12 @@ fn main() -> Result<(), Error> {
 
     let sm = super_metroid::load(&buffer)?;
 
-    println!("{}", ron::ser::to_string_pretty(&sm, Default::default())?);
+    let mut rooms: Vec<u16> = sm.room_mdb.keys().cloned().collect();
+    rooms.sort();
+
+    for addr in &rooms {
+        println!("{:x}", addr);
+    }
 
     Ok(())
 }
