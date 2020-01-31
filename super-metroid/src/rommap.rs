@@ -12,6 +12,13 @@ macro_rules! snes_to_rom_addr {
     };
 }
 
+#[macro_export]
+macro_rules! rom_addr_to_snes16 {
+    ($addr:expr) => {
+        (($addr & 0x7fff) + 0x8000) as u16
+    };
+}
+
 pub const ROOM_MDB_START: usize = rom_addr!(0x8f, 0x91f8);
 
 #[cfg(test)]
