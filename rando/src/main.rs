@@ -134,7 +134,7 @@ fn main() -> Result<(), Error> {
     // read the whole file
     f.read_to_end(&mut buffer)?;
 
-    let sm = super_metroid::load(&buffer)?;
+    let sm = super_metroid::SuperMetroidData::new(&buffer)?;
 
     let mut rooms: Vec<u16> = sm.room_mdb.keys().cloned().collect();
     rooms.sort();

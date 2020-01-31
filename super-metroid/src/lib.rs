@@ -181,266 +181,291 @@ pub struct SuperMetroidData {
     pub level_data: HashMap<u32, RoomData>,
 }
 
-fn load_room_mdb_header(data: &[u8]) -> Result<RoomMdb, Error> {
-    let mut r = Cursor::new(data);
-    Ok(RoomMdb {
-        index: r.read_u8()?,
-        area: Area::from_u8(r.read_u8()?).ok_or(format_err!("unknown area type."))?,
-        x: r.read_u8()?,
-        y: r.read_u8()?,
-        width: r.read_u8()?,
-        height: r.read_u8()?,
-        up_scroller: r.read_u8()?,
-        down_scroller: r.read_u8()?,
-        graphics_flags: r.read_u8()?,
-        door_list_ptr: r.read_u16::<LittleEndian>()?,
-        states: Vec::new(),
-        door_list: Vec::new(),
-    })
+struct Loader<'a> {
+    rom_data: &'a [u8],
+    rooms_to_check: HashSet<u16>,
+    sm: SuperMetroidData,
 }
 
-// State conditions are 2 bytes codes followed by 0, 1, or 2 bytes of parameter data.
-fn load_state_condition(data: &[u8], offset: usize) -> Result<(StateCondition, usize), Error> {
-    let mut r = Cursor::new(&data[offset..]);
-    let condition_value_raw = r.read_u16::<LittleEndian>()?;
-    let condition_value = StateConditionValue::from_u16(condition_value_raw).ok_or(format_err!(
-        "unknown state condition {:04x}",
-        condition_value_raw
-    ))?;
+impl<'a> Loader<'a> {
+    pub fn new(rom_data: &'a [u8]) -> Loader {
+        let mut loader = Loader {
+            rom_data: rom_data,
+            rooms_to_check: HashSet::new(),
+            sm: SuperMetroidData {
+                room_mdb: HashMap::new(),
+                level_data: HashMap::new(),
+            },
+        };
+        loader
+            .rooms_to_check
+            .insert((rommap::ROOM_MDB_START & 0x7fff) as u16 + 0x8000);
+        loader
+    }
 
-    let condition = match condition_value {
-        StateConditionValue::Default => StateCondition::Default,
-        StateConditionValue::DoorPointerIs => StateCondition::DoorPointerIs {
-            value: r.read_u16::<LittleEndian>()?,
-        },
-        StateConditionValue::MainAreaBossDead => StateCondition::MainAreaBossDead,
-        StateConditionValue::EventSet => {
-            let b = r.read_u8()?;
-            StateCondition::EventSet {
-                event: Event::from_u8(b).ok_or(format_err!("unknown event {:02x}", b))?,
+    fn load_room_mdb_header(data: &[u8]) -> Result<RoomMdb, Error> {
+        let mut r = Cursor::new(data);
+        Ok(RoomMdb {
+            index: r.read_u8()?,
+            area: Area::from_u8(r.read_u8()?).ok_or(format_err!("unknown area type."))?,
+            x: r.read_u8()?,
+            y: r.read_u8()?,
+            width: r.read_u8()?,
+            height: r.read_u8()?,
+            up_scroller: r.read_u8()?,
+            down_scroller: r.read_u8()?,
+            graphics_flags: r.read_u8()?,
+            door_list_ptr: r.read_u16::<LittleEndian>()?,
+            states: Vec::new(),
+            door_list: Vec::new(),
+        })
+    }
+
+    // State conditions are 2 bytes codes followed by 0, 1, or 2 bytes of parameter data.
+    fn load_state_condition(r: &mut dyn Read) -> Result<StateCondition, Error> {
+        let condition_value_raw = r.read_u16::<LittleEndian>()?;
+        let condition_value = StateConditionValue::from_u16(condition_value_raw).ok_or(
+            format_err!("unknown state condition {:04x}", condition_value_raw),
+        )?;
+
+        let condition = match condition_value {
+            StateConditionValue::Default => StateCondition::Default,
+            StateConditionValue::DoorPointerIs => StateCondition::DoorPointerIs {
+                value: r.read_u16::<LittleEndian>()?,
+            },
+            StateConditionValue::MainAreaBossDead => StateCondition::MainAreaBossDead,
+            StateConditionValue::EventSet => {
+                let b = r.read_u8()?;
+                StateCondition::EventSet {
+                    event: Event::from_u8(b).ok_or(format_err!("unknown event {:02x}", b))?,
+                }
             }
-        }
-        StateConditionValue::AreaBossesDead => StateCondition::AreaBossesDead {
-            bosses: r.read_u8()?,
-        },
-        StateConditionValue::HasMorphBall => StateCondition::HasMorphBall,
-        StateConditionValue::HasMorphBallAndMissiles => StateCondition::HasMorphBallAndMissiles,
-        StateConditionValue::HasPowerBombs => StateCondition::HasPowerBombs,
-        StateConditionValue::HasSpeedBooster => StateCondition::HasSpeedBooster,
-    };
-
-    Ok((condition, offset + r.position() as usize))
-}
-
-fn load_state_data(data: &[u8]) -> Result<StateData, Error> {
-    let mut r = Cursor::new(data);
-    Ok(StateData {
-        level_data: r.read_u24::<LittleEndian>()?,
-        tile_set: r.read_u8()?,
-        music_data_index: r.read_u8()?,
-        music_track: r.read_u8()?,
-        fx_ptr: r.read_u16::<LittleEndian>()?,
-        enemy_population: r.read_u16::<LittleEndian>()?,
-        enemy_set: r.read_u16::<LittleEndian>()?,
-        layer_2_scroll_x: r.read_u8()?,
-        layer_2_scroll_y: r.read_u8()?,
-        scroll_ptr: r.read_u16::<LittleEndian>()?,
-        x_ray_block_ptr: r.read_u16::<LittleEndian>()?,
-        main_asm_ptr: r.read_u16::<LittleEndian>()?,
-        plm_ptr: r.read_u16::<LittleEndian>()?,
-        bg_ptr: r.read_u16::<LittleEndian>()?,
-        setup_asm_ptr: r.read_u16::<LittleEndian>()?,
-    })
-}
-
-fn load_states(rom_data: &[u8], state_offset: usize, states: &mut Vec<State>) -> Result<(), Error> {
-    // Create a mutable shadow so we can increment state_offset in this function's scope.
-    let mut state_offset = state_offset;
-    loop {
-        let (condition, new_offset) = load_state_condition(rom_data, state_offset)?;
-        state_offset = new_offset;
-
-        let (data_ptr, done) = match condition {
-            // The default condition's state data immediately follows the end of the
-            // end of the state condition list.  It also signifies the end of that
-            // list.
-            StateCondition::Default => (((state_offset & 0x7fff) + 0x8000) as u16, true),
-
-            // For all other conditions, the state data is pointed to by the next u16.
-            _ => (
-                {
-                    let ptr = (&rom_data[state_offset..]).read_u16::<LittleEndian>()?;
-                    state_offset += 2;
-                    ptr
-                },
-                false,
-            ),
+            StateConditionValue::AreaBossesDead => StateCondition::AreaBossesDead {
+                bosses: r.read_u8()?,
+            },
+            StateConditionValue::HasMorphBall => StateCondition::HasMorphBall,
+            StateConditionValue::HasMorphBallAndMissiles => StateCondition::HasMorphBallAndMissiles,
+            StateConditionValue::HasPowerBombs => StateCondition::HasPowerBombs,
+            StateConditionValue::HasSpeedBooster => StateCondition::HasSpeedBooster,
         };
 
-        states.push(State {
-            condition: condition,
-            data: load_state_data(&rom_data[rom_addr!(0x8f, data_ptr)..])?,
-        });
-        if done {
-            break;
+        Ok(condition)
+    }
+
+    fn load_state_data(data: &[u8]) -> Result<StateData, Error> {
+        let mut r = Cursor::new(data);
+        Ok(StateData {
+            level_data: r.read_u24::<LittleEndian>()?,
+            tile_set: r.read_u8()?,
+            music_data_index: r.read_u8()?,
+            music_track: r.read_u8()?,
+            fx_ptr: r.read_u16::<LittleEndian>()?,
+            enemy_population: r.read_u16::<LittleEndian>()?,
+            enemy_set: r.read_u16::<LittleEndian>()?,
+            layer_2_scroll_x: r.read_u8()?,
+            layer_2_scroll_y: r.read_u8()?,
+            scroll_ptr: r.read_u16::<LittleEndian>()?,
+            x_ray_block_ptr: r.read_u16::<LittleEndian>()?,
+            main_asm_ptr: r.read_u16::<LittleEndian>()?,
+            plm_ptr: r.read_u16::<LittleEndian>()?,
+            bg_ptr: r.read_u16::<LittleEndian>()?,
+            setup_asm_ptr: r.read_u16::<LittleEndian>()?,
+        })
+    }
+
+    fn load_states(self: &Self, state_offset: usize, states: &mut Vec<State>) -> Result<(), Error> {
+        // Create a mutable shadow so we can increment state_offset in this function's scope.
+        let mut r = Cursor::new(&self.rom_data[state_offset..]);
+        loop {
+            let condition = Self::load_state_condition(&mut r)?;
+
+            let (data_ptr, done) = match condition {
+                // The default condition's state data immediately follows the end of the
+                // end of the state condition list.  It also signifies the end of that
+                // list.
+                StateCondition::Default => (
+                    rom_addr_to_snes16!(state_offset + r.position() as usize),
+                    true,
+                ),
+
+                // For all other conditions, the state data is pointed to by the next u16.
+                _ => (r.read_u16::<LittleEndian>()?, false),
+            };
+
+            states.push(State {
+                condition: condition,
+                data: Self::load_state_data(&self.rom_data[rom_addr!(0x8f, data_ptr)..])?,
+            });
+            if done {
+                break;
+            }
         }
+
+        Ok(())
     }
 
-    Ok(())
-}
+    fn load_room_mdb(self: &mut Self, offset: usize) -> Result<RoomMdb, Error> {
+        let mut mdb = Self::load_room_mdb_header(&self.rom_data[offset..])?;
+        self.load_states(offset + 0xb, &mut mdb.states)?;
 
-fn load_room_mdb(rom_data: &[u8], offset: usize) -> Result<RoomMdb, Error> {
-    let mut mdb = load_room_mdb_header(&rom_data[offset..])?;
-    load_states(rom_data, offset + 0xb, &mut mdb.states)?;
-
-    Ok(mdb)
-}
-
-fn load_block_info(r: &mut dyn Read) -> Result<BlockInfo, Error> {
-    let data = r.read_u16::<LittleEndian>()?;
-
-    Ok(BlockInfo {
-        ty: BlockType::from_u8((data >> 12) as u8 & 0xf)
-            .ok_or(format_err!("unknown block type"))?,
-        x_flip: is_bit_set!(data, 0x400),
-        y_flip: is_bit_set!(data, 0x800),
-        tile_index: data & 0x3ff,
-    })
-}
-
-fn load_room_data(data: &[u8]) -> Result<RoomData, Error> {
-    let data_len = data.len() - 2;
-    let mut r = Cursor::new(data);
-
-    // The first word gives the size of layer 1 block data.  Since block
-    // info is 2 bytes, we divide by two to get the total number of blocks.
-    let num_blocks = r.read_u16::<LittleEndian>()? as usize / 2;
-
-    // There will either be 1 layer (2 bytes per block) and bts (1 byte per
-    // block or 2 layers and bts.
-    if (data_len != num_blocks * 3) && (data_len != num_blocks * 5) {
-        return Err(format_err!("wrong sized room data"));
+        Ok(mdb)
     }
 
-    let has_layer2 = data_len == num_blocks * 5;
+    fn load_block_info(r: &mut dyn Read) -> Result<BlockInfo, Error> {
+        let data = r.read_u16::<LittleEndian>()?;
 
-    let mut layer_1 = Vec::new();
-    for _ in 0..num_blocks {
-        layer_1.push(load_block_info(&mut r)?);
+        Ok(BlockInfo {
+            ty: BlockType::from_u8((data >> 12) as u8 & 0xf)
+                .ok_or(format_err!("unknown block type"))?,
+            x_flip: is_bit_set!(data, 0x400),
+            y_flip: is_bit_set!(data, 0x800),
+            tile_index: data & 0x3ff,
+        })
     }
 
-    let mut max_door_index = 0;
-    let mut bts = Vec::new();
-    for i in 0..num_blocks {
-        // Reading a byte at a time is not so efficient....
-        let b = r.read_u8()?;
-        bts.push(b);
+    fn load_room_data(data: &[u8]) -> Result<RoomData, Error> {
+        let data_len = data.len() - 2;
+        let mut r = Cursor::new(data);
 
-        // Keep track of maximum door index.
-        if layer_1[i].ty == BlockType::DoorBlock {
-            max_door_index = cmp::max(max_door_index, b as usize);
+        // The first word gives the size of layer 1 block data.  Since block
+        // info is 2 bytes, we divide by two to get the total number of blocks.
+        let num_blocks = r.read_u16::<LittleEndian>()? as usize / 2;
+
+        // There will either be 1 layer (2 bytes per block) and bts (1 byte per
+        // block or 2 layers and bts.
+        if (data_len != num_blocks * 3) && (data_len != num_blocks * 5) {
+            return Err(format_err!("wrong sized room data"));
         }
-    }
 
-    let layer_2 = if has_layer2 {
-        let mut layer_2 = Vec::new();
+        let has_layer2 = data_len == num_blocks * 5;
+
+        let mut layer_1 = Vec::new();
         for _ in 0..num_blocks {
-            layer_2.push(load_block_info(&mut r)?);
+            layer_1.push(Self::load_block_info(&mut r)?);
         }
 
-        Some(layer_2)
-    } else {
-        None
-    };
+        let mut max_door_index = 0;
+        let mut bts = Vec::new();
+        for i in 0..num_blocks {
+            // Reading a byte at a time is not so efficient....
+            let b = r.read_u8()?;
+            bts.push(b);
 
-    Ok(RoomData {
-        layer_1: layer_1,
-        bts: bts,
-        layer_2: layer_2,
-        num_doors: max_door_index + 1,
-    })
-}
+            // Keep track of maximum door index.
+            if layer_1[i].ty == BlockType::DoorBlock {
+                max_door_index = cmp::max(max_door_index, b as usize);
+            }
+        }
 
-fn load_door_data(data: &[u8]) -> Result<DoorData, Error> {
-    let mut r = Cursor::new(data);
-    let dest_room_ptr = r.read_u16::<LittleEndian>()?;
-    let elevator_props = r.read_u8()?;
-    let orientation = r.read_u8()?;
-    let x0 = r.read_u8()?;
-    let y0 = r.read_u8()?;
-    let x1 = r.read_u8()?;
-    let y1 = r.read_u8()?;
-    let spawn_dist = r.read_u16::<LittleEndian>()?;
-    let asm_ptr = r.read_u16::<LittleEndian>()?;
+        let layer_2 = if has_layer2 {
+            let mut layer_2 = Vec::new();
+            for _ in 0..num_blocks {
+                layer_2.push(Self::load_block_info(&mut r)?);
+            }
 
-    Ok(DoorData {
-        dest_room_ptr: dest_room_ptr,
-        elevator_props: elevator_props,
-        orientation: orientation,
-        x: x0 as u16 + ((x1 as u16) << 8),
-        y: y0 as u16 + ((y1 as u16) << 8),
-        spawn_dist: spawn_dist,
-        asm_ptr: asm_ptr,
-    })
-}
+            Some(layer_2)
+        } else {
+            None
+        };
 
-pub fn load(rom_data: &[u8]) -> Result<SuperMetroidData, Error> {
-    if rom_data.len() != 0x300000 {
-        return Err(format_err!("Rom data is wrong size."));
+        Ok(RoomData {
+            layer_1: layer_1,
+            bts: bts,
+            layer_2: layer_2,
+            num_doors: max_door_index + 1,
+        })
     }
 
-    // TODO: verify checksum/crc/other hash.
-    let mut rooms_to_check: HashSet<u16> = HashSet::new();
-    let mut room_mdb = HashMap::new();
-    let mut level_data_db: HashMap<u32, RoomData> = HashMap::new();
+    fn load_door_data(data: &[u8]) -> Result<DoorData, Error> {
+        let mut r = Cursor::new(data);
+        let dest_room_ptr = r.read_u16::<LittleEndian>()?;
+        let elevator_props = r.read_u8()?;
+        let orientation = r.read_u8()?;
+        let x0 = r.read_u8()?;
+        let y0 = r.read_u8()?;
+        let x1 = r.read_u8()?;
+        let y1 = r.read_u8()?;
+        let spawn_dist = r.read_u16::<LittleEndian>()?;
+        let asm_ptr = r.read_u16::<LittleEndian>()?;
 
-    rooms_to_check.insert((rommap::ROOM_MDB_START & 0x7fff) as u16 + 0x8000);
-    while !rooms_to_check.is_empty() {
-        let room_ptr = *(rooms_to_check.iter().next().unwrap());
-        let rom_ptr = rom_addr!(0x8f, room_ptr);
-        let mut mdb = load_room_mdb(rom_data, rom_ptr)?;
+        Ok(DoorData {
+            dest_room_ptr: dest_room_ptr,
+            elevator_props: elevator_props,
+            orientation: orientation,
+            x: x0 as u16 + ((x1 as u16) << 8),
+            y: y0 as u16 + ((y1 as u16) << 8),
+            spawn_dist: spawn_dist,
+            asm_ptr: asm_ptr,
+        })
+    }
 
+    fn load_level_data(self: &mut Self, mdb: &RoomMdb) -> Result<usize, Error> {
         // Load level data and calculate number of doors.
         let mut num_doors = 0;
         for state in &mdb.states {
             let level_data_ptr = state.data.level_data;
-            let level_num_doors = if level_data_db.contains_key(&level_data_ptr) {
-                let room_data = level_data_db.get(&level_data_ptr).unwrap();
+            let level_num_doors = if self.sm.level_data.contains_key(&level_data_ptr) {
+                let room_data = self.sm.level_data.get(&level_data_ptr).unwrap();
                 room_data.num_doors
             } else {
                 let level_data =
-                    compression::decompress(&rom_data[snes_to_rom_addr!(level_data_ptr)..])?;
-                let room_data = load_room_data(&level_data)?;
+                    compression::decompress(&self.rom_data[snes_to_rom_addr!(level_data_ptr)..])?;
+                let room_data = Self::load_room_data(&level_data)?;
                 let num = room_data.num_doors;
-                level_data_db.insert(level_data_ptr, room_data);
+                self.sm.level_data.insert(level_data_ptr, room_data);
                 num
             };
             num_doors = cmp::max(num_doors, level_num_doors);
         }
+        Ok(num_doors)
+    }
 
+    fn load_door_list(self: &mut Self, mdb: &mut RoomMdb, num_doors: usize) -> Result<(), Error> {
         // load door list.
-        let mut r = Cursor::new(&rom_data[rom_addr!(0x8f, mdb.door_list_ptr)..]);
+        let mut r = Cursor::new(&self.rom_data[rom_addr!(0x8f, mdb.door_list_ptr)..]);
         for _ in 0..num_doors {
             let door_data_ptr = r.read_u16::<LittleEndian>()?;
-            let door_data = load_door_data(&rom_data[rom_addr!(0x83, door_data_ptr)..])?;
+            let door_data = Self::load_door_data(&self.rom_data[rom_addr!(0x83, door_data_ptr)..])?;
             let dest_room_ptr = door_data.dest_room_ptr;
             if dest_room_ptr == 0 {
                 continue;
             }
             mdb.door_list.push(door_data);
-            if !room_mdb.contains_key(&dest_room_ptr) {
-                rooms_to_check.insert(dest_room_ptr);
+            if !self.sm.room_mdb.contains_key(&dest_room_ptr) {
+                self.rooms_to_check.insert(dest_room_ptr);
             }
         }
 
-        rooms_to_check.remove(&room_ptr);
-        room_mdb.insert(room_ptr, mdb);
+        Ok(())
     }
 
-    Ok(SuperMetroidData {
-        room_mdb: room_mdb,
-        level_data: level_data_db,
-    })
+    pub fn load(mut self: Self) -> Result<SuperMetroidData, Error> {
+        while !self.rooms_to_check.is_empty() {
+            let room_ptr = *(self.rooms_to_check.iter().next().unwrap());
+            let rom_ptr = rom_addr!(0x8f, room_ptr);
+            let mut mdb = self.load_room_mdb(rom_ptr)?;
+
+            let num_doors = self.load_level_data(&mut mdb)?;
+            self.load_door_list(&mut mdb, num_doors)?;
+
+            self.rooms_to_check.remove(&room_ptr);
+            self.sm.room_mdb.insert(room_ptr, mdb);
+        }
+        Ok(self.sm)
+    }
+}
+
+impl SuperMetroidData {
+    pub fn new(rom_data: &[u8]) -> Result<SuperMetroidData, Error> {
+        if rom_data.len() != 0x300000 {
+            return Err(format_err!("Rom data is wrong size."));
+        }
+
+        // TODO: verify checksum/crc/other hash.
+        let loader = Loader::new(rom_data);
+
+        Ok(loader.load()?)
+    }
 }
 
 #[cfg(test)]
