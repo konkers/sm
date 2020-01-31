@@ -38,7 +38,7 @@ impl<'a> dot::Labeller<'a, Nd, Ed> for Edges {
             Some(name) => name,
             None => "",
         };
-        dot::LabelText::html(format!("{}<br />{}", name, region))
+        dot::LabelText::html(format!("{}<br />{}<br />{:04x}", name, region, n))
     }
 
     fn node_color(&'a self, n: &Nd) -> Option<dot::LabelText<'a>> {
@@ -121,7 +121,7 @@ fn load_regions() -> Result<HashMap<String, smjsondata::Root>, Error> {
         "wreckedship/main",
     ] {
         println!("{}", loc_str);
-        let f = File::open(format!("sm-json-data/region/{}.json", loc_str))?;
+        let f = File::open(format!("../third-party/sm-json-data/region/{}.json", loc_str))?;
         let region: smjsondata::Root = serde_json::from_reader(BufReader::new(f))?;
         map.insert(String::from(*loc_str), region);
     }

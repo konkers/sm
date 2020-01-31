@@ -1,0 +1,3 @@
+[submodule "third-party/sm-json-data"]
+	path = third-party/sm-json-data
+	url = https://github.com/miketrethewey/sm-json-data/
