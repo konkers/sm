@@ -183,6 +183,32 @@ pub struct PlmPopulation {
     pub param: u16,
 }
 
+#[derive(Debug, FromPrimitive, Serialize)]
+#[repr(u16)]
+pub enum PlmItemId {
+    ETank = 0xeed7,
+    Missile = 0xeedb,
+    SuperMissile = 0xeedf,
+    PowerBomb = 0xeee3,
+    Bomb = 0xeee7,
+    Charge = 0xeeeb,
+    Ice = 0xeeef,
+    HiJump = 0xeef3,
+    SpeedBooster = 0xeef7,
+    Wave = 0xeefb,
+    Spazer = 0xeeff,
+    SpringBall = 0xef03,
+    Varia = 0xef07,
+    Gravity = 0xef0b,
+    Plasma = 0xef13,
+    XRayScope = 0xef0f,
+    Grapple = 0xef17,
+    SpaceJump = 0xef1b,
+    ScrewAttack = 0xef1f,
+    Morph = 0xef23,
+    Reserve = 0xef27,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SuperMetroidData {
     pub room_mdb: HashMap<u16, RoomMdb>,
