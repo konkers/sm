@@ -1,5 +1,6 @@
 use dot;
 use failure::Error;
+use num::FromPrimitive;
 use parse_int::parse;
 use serde_json;
 use std::borrow::Cow;
@@ -12,12 +13,19 @@ use super_metroid;
 
 mod smjsondata;
 
+struct RoomPlm {
+    states: Vec<usize>,
+    plm: super_metroid::PlmPopulation,
+}
+
 type Nd = u16;
 type Ed = (u16, u16);
 struct Edges {
     edges: Vec<Ed>,
     room_names: HashMap<u16, String>,
     room_regions: HashMap<u16, String>,
+    // [room_ptr][plm_id] -> RoomPlm
+    room_plms: HashMap<u16, HashMap<(u16, u16), RoomPlm>>,
 }
 
 impl<'a> dot::Labeller<'a, Nd, Ed> for Edges {
@@ -38,7 +46,31 @@ impl<'a> dot::Labeller<'a, Nd, Ed> for Edges {
             Some(name) => name,
             None => "",
         };
-        dot::LabelText::html(format!("{}<br />{}<br />{:04x}", name, region, n))
+        let plms = self
+            .room_plms
+            .get(n)
+            .unwrap()
+            .iter()
+            .filter(|(plm_id, _)| super_metroid::PlmItemId::from_u16(plm_id.0).is_some())
+            .map(|(plm_id, data)| {
+                let states = data
+                    .states
+                    .iter()
+                    .map(|state| format!("{}", state))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                let item = super_metroid::PlmItemId::from_u16(plm_id.0).unwrap();
+                format!(
+                    "{:?}{}@({}, {}) states: {}",
+                    item, data.plm.param, data.plm.x, data.plm.y, states
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("<br />");
+        dot::LabelText::html(format!(
+            "{}<br />{}<br />addr: {:04x}<br />{}",
+            name, region, n, plms
+        ))
     }
 
     fn node_color(&'a self, n: &Nd) -> Option<dot::LabelText<'a>> {
@@ -144,6 +176,7 @@ fn main() -> Result<(), Error> {
     let map = load_regions()?;
     let mut room_names: HashMap<u16, String> = HashMap::new();
     let mut room_regions: HashMap<u16, String> = HashMap::new();
+    let mut room_plms: HashMap<u16, HashMap<(u16, u16), RoomPlm>> = HashMap::new();
 
     for (name, region) in &map {
         for room in &region.rooms {
@@ -154,11 +187,34 @@ fn main() -> Result<(), Error> {
         }
     }
 
+    for (addr, room) in &sm.room_mdb {
+        let plms = room_plms.entry(*addr).or_insert(HashMap::new());
+        for (state_idx, state) in room.states.iter().enumerate() {
+            for plm in sm.plm_population.get(&state.data.plm_ptr).unwrap() {
+                match plms.get_mut(&(plm.id, plm.param)) {
+                    Some(ref mut data) => {
+                        data.states.push(state_idx);
+                    }
+                    None => {
+                        plms.insert(
+                            (plm.id, plm.param),
+                            RoomPlm {
+                                states: vec![state_idx],
+                                plm: plm.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // Build up edges graph for dot.
     let mut edges = Edges {
         edges: Vec::new(),
         room_names: room_names,
         room_regions: room_regions,
+        room_plms: room_plms,
     };
     for (addr, room) in &sm.room_mdb {
         for door in &room.door_list {
