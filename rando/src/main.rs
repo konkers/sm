@@ -120,8 +120,10 @@ fn load_regions() -> Result<HashMap<String, smjsondata::Root>, Error> {
         "tourian/main",
         "wreckedship/main",
     ] {
-        println!("{}", loc_str);
-        let f = File::open(format!("../third-party/sm-json-data/region/{}.json", loc_str))?;
+        let f = File::open(format!(
+            "../third-party/sm-json-data/region/{}.json",
+            loc_str
+        ))?;
         let region: smjsondata::Root = serde_json::from_reader(BufReader::new(f))?;
         map.insert(String::from(*loc_str), region);
     }
