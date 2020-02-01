@@ -85,21 +85,21 @@ pub enum StateCondition {
 
 #[derive(Debug, Serialize)]
 pub struct StateData {
-    level_data: u32,
-    tile_set: u8,
-    music_data_index: u8,
-    music_track: u8,
-    fx_ptr: u16,           // Bank $83
-    enemy_population: u16, // bank $a1
-    enemy_set: u16,        // bank $b4
-    layer_2_scroll_x: u8,
-    layer_2_scroll_y: u8,
-    scroll_ptr: u16,      // bank $8f?
-    x_ray_block_ptr: u16, // bank ??
-    main_asm_ptr: u16,    // bank ??
-    plm_ptr: u16,         // bank ??
-    bg_ptr: u16,          // bank ??
-    setup_asm_ptr: u16,   // bank ??
+    pub level_data: u32,
+    pub tile_set: u8,
+    pub music_data_index: u8,
+    pub music_track: u8,
+    pub fx_ptr: u16,           // Bank $83
+    pub enemy_population: u16, // bank $a1
+    pub enemy_set: u16,        // bank $b4
+    pub layer_2_scroll_x: u8,
+    pub layer_2_scroll_y: u8,
+    pub scroll_ptr: u16,      // bank $8f?
+    pub x_ray_block_ptr: u16, // bank ??
+    pub main_asm_ptr: u16,    // bank ??
+    pub plm_ptr: u16,         // bank ??
+    pub bg_ptr: u16,          // bank ??
+    pub setup_asm_ptr: u16,   // bank ??
 }
 
 #[derive(Debug, Serialize)]
@@ -176,9 +176,18 @@ pub struct RoomMdb {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PlmPopulation {
+    pub id: u16,
+    pub x: u8,
+    pub y: u8,
+    pub param: u16,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SuperMetroidData {
     pub room_mdb: HashMap<u16, RoomMdb>,
     pub level_data: HashMap<u32, RoomData>,
+    pub plm_population: HashMap<u16, Vec<PlmPopulation>>,
 }
 
 struct Loader<'a> {
@@ -195,6 +204,7 @@ impl<'a> Loader<'a> {
             sm: SuperMetroidData {
                 room_mdb: HashMap::new(),
                 level_data: HashMap::new(),
+                plm_population: HashMap::new(),
             },
         };
         loader
@@ -399,23 +409,42 @@ impl<'a> Loader<'a> {
         })
     }
 
+    fn get_or_load_level_data(self: &mut Self, level_data_ptr: u32) -> Result<&RoomData, Error> {
+        Ok(self.sm.level_data.entry(level_data_ptr).or_insert({
+            let level_data =
+                compression::decompress(&self.rom_data[snes_to_rom_addr!(level_data_ptr)..])?;
+            Self::load_room_data(&level_data)?
+        }))
+    }
+
+    fn get_or_load_plm_list(self: &mut Self, plm_ptr: u16) -> Result<&Vec<PlmPopulation>, Error> {
+        Ok(self.sm.plm_population.entry(plm_ptr).or_insert({
+            let mut r = Cursor::new(&self.rom_data[rom_addr!(0x8f, plm_ptr)..]);
+            let mut plms = Vec::new();
+            loop {
+                let id = r.read_u16::<LittleEndian>()?;
+                if id == 0x0000 {
+                    break;
+                }
+                plms.push(PlmPopulation {
+                    id: id,
+                    x: r.read_u8()?,
+                    y: r.read_u8()?,
+                    param: r.read_u16::<LittleEndian>()?,
+                });
+            }
+            plms
+        }))
+    }
+
     fn load_level_data(self: &mut Self, mdb: &RoomMdb) -> Result<usize, Error> {
         // Load level data and calculate number of doors.
         let mut num_doors = 0;
         for state in &mdb.states {
             let level_data_ptr = state.data.level_data;
-            let level_num_doors = if self.sm.level_data.contains_key(&level_data_ptr) {
-                let room_data = self.sm.level_data.get(&level_data_ptr).unwrap();
-                room_data.num_doors
-            } else {
-                let level_data =
-                    compression::decompress(&self.rom_data[snes_to_rom_addr!(level_data_ptr)..])?;
-                let room_data = Self::load_room_data(&level_data)?;
-                let num = room_data.num_doors;
-                self.sm.level_data.insert(level_data_ptr, room_data);
-                num
-            };
-            num_doors = cmp::max(num_doors, level_num_doors);
+            let level_data = self.get_or_load_level_data(level_data_ptr)?;
+            num_doors = cmp::max(num_doors, level_data.num_doors);
+            self.get_or_load_plm_list(state.data.plm_ptr)?;
         }
         Ok(num_doors)
     }
