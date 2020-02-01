@@ -175,7 +175,7 @@ pub struct RoomMdb {
     pub door_list: Vec<DoorData>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PlmPopulation {
     pub id: u16,
     pub x: u8,
