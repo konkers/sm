@@ -9,8 +9,10 @@ edition = "2018"
 [dependencies]
 dot = "0.1.4"
 failure = "0.1.6"
+image = "0.22.4"
 num = "0.2"
 parse_int = "0.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.45"
+structopt = "0.3.9"
 super-metroid = { path = "../super-metroid" }

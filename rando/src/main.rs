@@ -1,5 +1,6 @@
 use dot;
 use failure::Error;
+use image::{GenericImage, GenericImageView, ImageBuffer, RgbImage};
 use num::FromPrimitive;
 use parse_int::parse;
 use serde_json;
@@ -8,10 +9,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::path::PathBuf;
+use structopt::StructOpt;
 
 use super_metroid;
 
 mod smjsondata;
+
+#[derive(StructOpt, Debug)]
+#[structopt(name = "basic")]
+struct Opt {
+    #[structopt(long, parse(from_os_str), default_value = "SuperMetroid.F8DF.sfc")]
+    rom: PathBuf,
+}
 
 struct RoomPlm {
     states: Vec<usize>,
@@ -21,6 +31,7 @@ struct RoomPlm {
 type Nd = u16;
 type Ed = (u16, u16);
 struct Edges {
+    sm: super_metroid::SuperMetroidData,
     edges: Vec<Ed>,
     room_names: HashMap<u16, String>,
     room_regions: HashMap<u16, String>,
@@ -68,8 +79,8 @@ impl<'a> dot::Labeller<'a, Nd, Ed> for Edges {
             .collect::<Vec<String>>()
             .join("<br />");
         dot::LabelText::html(format!(
-            "{}<br />{}<br />addr: {:04x}<br />{}",
-            name, region, n, plms
+            "{:02x}: {}<br />{}<br />addr: {:04x}<br />{}",
+            self.sm.room_mdb[n].index, name, region, n, plms
         ))
     }
 
@@ -162,8 +173,50 @@ fn load_regions() -> Result<HashMap<String, smjsondata::Root>, Error> {
     Ok(map)
 }
 
+fn get_pixel(data: &[u8], x: u32, y: u32) -> u8 {
+    let b = data[(y * 4 + x / 2) as usize];
+    if x & 0x1 == 0x1 {
+        b >> 4
+    } else {
+        b & 0xf
+    }
+}
+
+fn render_tiles(addr: &u32, tiles: &super_metroid::Tiles) {
+    // Tiles are 4bpp and 8x8.
+    let bytes_per_tile = (8 * 8) / 2;
+    let num_tiles = tiles.data.len() / bytes_per_tile;
+
+    let tiles_w: u32 = 16;
+    let tiles_h: u32 = num_tiles as u32 / tiles_w;
+
+    let mut imgbuf = image::ImageBuffer::new(tiles_w * 8, tiles_h * 8);
+    for (_, _, pixel) in imgbuf.enumerate_pixels_mut() {
+        *pixel = image::Rgb([0, 0, 0]);
+    }
+
+    for tile_y in 0..tiles_h {
+        for tile_x in 0..tiles_w {
+            let img_x = tile_x * 8;
+            let img_y = tile_y * 8;
+            let tile_num = tile_y * tiles_w + tile_x;
+
+            let tile_data = &tiles.data[(tile_num as usize * bytes_per_tile)..];
+            for y in 0..8 {
+                for x in 0..8 {
+                    let val = get_pixel(tile_data, x, y) << 4;
+                    *imgbuf.get_pixel_mut(img_x + x, img_y + y) = image::Rgb([val, val, val]);
+                }
+            }
+        }
+    }
+
+    imgbuf.save(format!("tiles/{:06x}.png", addr)).unwrap();
+}
+
 fn main() -> Result<(), Error> {
-    let mut f = File::open("SuperMetroid.F8DF.sfc")?;
+    let opt = Opt::from_args();
+    let mut f = File::open(opt.rom)?;
     let mut buffer = Vec::new();
     // read the whole file
     f.read_to_end(&mut buffer)?;
@@ -209,14 +262,29 @@ fn main() -> Result<(), Error> {
         }
     }
 
+    for entry in &sm.tile_sets {
+        println!(
+            "{:06X}, {:06X}, {:06X}",
+            entry.tile_table_ptr, entry.tiles_ptr, entry.palette_ptr
+        );
+    }
+
+    for (addr, tiles) in &sm.tiles {
+        render_tiles(addr, tiles);
+    }
+
+    for (addr, table) in &sm.tile_tables {
+        println!("{:06x}:{}", addr, table.data.len());
+    }
     // Build up edges graph for dot.
     let mut edges = Edges {
+        sm: sm,
         edges: Vec::new(),
         room_names: room_names,
         room_regions: room_regions,
         room_plms: room_plms,
     };
-    for (addr, room) in &sm.room_mdb {
+    for (addr, room) in &edges.sm.room_mdb {
         for door in &room.door_list {
             edges.edges.push((*addr, door.dest_room_ptr));
         }
