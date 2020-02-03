@@ -83,10 +83,43 @@ pub enum StateCondition {
     HasSpeedBooster,
 }
 
+#[derive(Debug, FromPrimitive, Serialize)]
+pub enum TileSet {
+    UpperCrateria = 0x00,
+    RedCrateria = 0x01,
+    LowerCrateria = 0x02,
+    OldTourian = 0x03,
+    WreckedShipOff = 0x04,
+    WreckedShipOn = 0x05,
+    GreenBlueBrinstart = 0x06,
+    RedBrinstar = 0x07,
+    PreTourian = 0x08,
+    HeatedNorfair = 0x09,
+    UnheatedNorfiar = 0x0a,
+    SandlessMaridia = 0x0b,
+    SandyMaridia = 0x0c,
+    Tourian = 0x0d,
+    MotherBrainRoom = 0x0e,
+    BlueCeres = 0x0f,
+    WhiteCeres = 0x10,
+    BlueCeresElevator = 0x11,
+    WhiteCeresElevator = 0x12,
+    BlueCeresRidley = 0x13,
+    WhiteCeresRidley = 0x14,
+    MapRoom = 0x15,
+    WreckedShipMapRoomOff = 0x16,
+    BlueRefillRoom = 0x17,
+    YellowRefillRoom = 0x18,
+    SaveRoom = 0x19,
+    KraidRoom = 0x1a,
+    CrocomireRoom = 0x1b,
+    DraygonRoom = 0x1c,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StateData {
     pub level_data: u32,
-    pub tile_set: u8,
+    pub tile_set: TileSet,
     pub music_data_index: u8,
     pub music_track: u8,
     pub fx_ptr: u16,           // Bank $83
@@ -253,11 +286,32 @@ pub enum PlmItemId {
     ReserveHidden = 0xefcf,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct TileSetEntry {
+    pub tile_table_ptr: u32,
+    pub tiles_ptr: u32,
+    pub palette_ptr: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Tiles {
+    // Data is de-planarized and stored as 4bpp tiled.
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TileTable {
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SuperMetroidData {
     pub room_mdb: HashMap<u16, RoomMdb>,
     pub level_data: HashMap<u32, RoomData>,
     pub plm_population: HashMap<u16, Vec<PlmPopulation>>,
+    pub tile_sets: Vec<TileSetEntry>,
+    pub tiles: HashMap<u32, Tiles>,
+    pub tile_tables: HashMap<u32, TileTable>,
 }
 
 struct Loader<'a> {
@@ -275,6 +329,9 @@ impl<'a> Loader<'a> {
                 room_mdb: HashMap::new(),
                 level_data: HashMap::new(),
                 plm_population: HashMap::new(),
+                tile_sets: Vec::new(),
+                tiles: HashMap::new(),
+                tile_tables: HashMap::new(),
             },
         };
         loader
@@ -336,7 +393,7 @@ impl<'a> Loader<'a> {
         let mut r = Cursor::new(data);
         Ok(StateData {
             level_data: r.read_u24::<LittleEndian>()?,
-            tile_set: r.read_u8()?,
+            tile_set: TileSet::from_u8(r.read_u8()?).ok_or(format_err!("unknown tile set"))?,
             music_data_index: r.read_u8()?,
             music_track: r.read_u8()?,
             fx_ptr: r.read_u16::<LittleEndian>()?,
@@ -538,6 +595,102 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
+    fn load_tileset_table(self: &mut Self) -> Result<(), Error> {
+        let mut ptr_table_r = Cursor::new(&self.rom_data[rommap::TILESET_POINTER_TABLE..]);
+        for _ in 0..rommap::TILESET_POINTER_TABLE_COUNT {
+            let ptr = ptr_table_r.read_u16::<LittleEndian>()?;
+            let entry_addr = rom_addr!(rommap::TILESET_ENTRY_BANK, ptr);
+            let mut entry_r = Cursor::new(&self.rom_data[entry_addr..]);
+            self.sm.tile_sets.push(TileSetEntry {
+                tile_table_ptr: entry_r.read_u24::<LittleEndian>()?,
+                tiles_ptr: entry_r.read_u24::<LittleEndian>()?,
+                palette_ptr: entry_r.read_u24::<LittleEndian>()?,
+            });
+        }
+        Ok(())
+    }
+
+    fn load_tiles(self: &mut Self, addr: u32) -> Result<(), Error> {
+        if self.sm.tiles.contains_key(&addr) {
+            return Ok(());
+        }
+
+        let rom_addr = snes_to_rom_addr!(addr);
+        let mut data = compression::decompress(&self.rom_data[(rom_addr as usize)..])?;
+
+        Self::de_planar_tiles(&mut data);
+        self.sm.tiles.insert(addr, Tiles { data: data });
+
+        Ok(())
+    }
+
+    // SNES tiles are packed really oddly.
+    // From: https://mrclick.zophar.net/TilEd/download/consolegfx.txt
+    //
+    // 4BPP SNES/PC Engine
+    //  Colors Per Tile - 0-15
+    //  Space Used - 4 bits per pixel.  32 bytes for a 8x8 tile.
+    //
+    //  Note: This is a tiled, planar bitmap format.
+    //  Each pair represents one byte
+    //  Format:
+    //
+    //  [r0, bp1], [r0, bp2], [r1, bp1], [r1, bp2], [r2, bp1], [r2, bp2], [r3, bp1], [r3, bp2]
+    //  [r4, bp1], [r4, bp2], [r5, bp1], [r5, bp2], [r6, bp1], [r6, bp2], [r7, bp1], [r7, bp2]
+    //  [r0, bp3], [r0, bp4], [r1, bp3], [r1, bp4], [r2, bp3], [r2, bp4], [r3, bp3], [r3, bp4]
+    //  [r4, bp3], [r4, bp4], [r5, bp3], [r5, bp4], [r6, bp3], [r6, bp4], [r7, bp3], [r7, bp4]
+    //
+    //  Short Description:
+    //
+    //  Bitplanes 1 and 2 are stored first, intertwined row by row.  Then bitplanes 3 and 4
+    //  are stored, intertwined row by row.
+    fn get_pixel(data: &[u8], x: u32, y: u32) -> u8 {
+        let x_shift = (7 - x) as u8;
+        let mut b = 0;
+        for bit in 0..4 {
+            let offset = y * 2 + (bit & 0x1) + ((bit >> 1) * 16);
+            if (data[offset as usize] & (1 << x_shift)) != 0 {
+                b |= 1 << bit;
+            }
+        }
+        b
+    }
+    fn de_planar_tiles(data: &mut [u8]) {
+        const BYTES_PER_TILE: usize = (8 * 8) / 2;
+        let num_tiles = data.len() / BYTES_PER_TILE;
+
+        for tile_num in 0..num_tiles {
+            let tile_data = &mut data[(tile_num as usize * BYTES_PER_TILE)..];
+
+            let mut new_data = [0; BYTES_PER_TILE];
+
+            for y in 0..8 {
+                for x in 0..8 {
+                    let val = Self::get_pixel(tile_data, x, y);
+                    new_data[(y * 4 + x / 2) as usize] |=
+                        if x & 0x1 == 0x1 { val << 4 } else { val }
+                }
+            }
+
+            for i in 0..BYTES_PER_TILE {
+                tile_data[i] = new_data[i];
+            }
+        }
+    }
+
+    fn load_tile_table(self: &mut Self, addr: u32) -> Result<(), Error> {
+        if self.sm.tile_tables.contains_key(&addr) {
+            return Ok(());
+        }
+
+        let rom_addr = snes_to_rom_addr!(addr);
+        let data = compression::decompress(&self.rom_data[(rom_addr as usize)..])?;
+
+        self.sm.tile_tables.insert(addr, TileTable { data: data });
+
+        Ok(())
+    }
+
     pub fn load(mut self: Self) -> Result<SuperMetroidData, Error> {
         while !self.rooms_to_check.is_empty() {
             let room_ptr = *(self.rooms_to_check.iter().next().unwrap());
@@ -550,6 +703,18 @@ impl<'a> Loader<'a> {
             self.rooms_to_check.remove(&room_ptr);
             self.sm.room_mdb.insert(room_ptr, mdb);
         }
+
+        self.load_tileset_table()?;
+
+        // Copy the tile sets so we can modify sm while iterating.
+        let tile_sets = self.sm.tile_sets.clone();
+        for entry in tile_sets {
+            self.load_tiles(entry.tiles_ptr)?;
+            self.load_tile_table(entry.tile_table_ptr)?;
+        }
+        self.load_tiles(rom_addr_to_snes!(rommap::CRE_TILES))?;
+        self.load_tile_table(rom_addr_to_snes!(rommap::CRE_TILE_TABLE))?;
+
         Ok(self.sm)
     }
 }
