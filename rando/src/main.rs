@@ -1,6 +1,5 @@
 use dot;
 use failure::Error;
-use image::{GenericImage, GenericImageView, ImageBuffer, RgbImage};
 use num::FromPrimitive;
 use parse_int::parse;
 use serde_json;
@@ -173,47 +172,6 @@ fn load_regions() -> Result<HashMap<String, smjsondata::Root>, Error> {
     Ok(map)
 }
 
-fn get_pixel(data: &[u8], x: u32, y: u32) -> u8 {
-    let b = data[(y * 4 + x / 2) as usize];
-    if x & 0x1 == 0x1 {
-        b >> 4
-    } else {
-        b & 0xf
-    }
-}
-
-fn render_tiles(addr: &u32, tiles: &super_metroid::Tiles) {
-    // Tiles are 4bpp and 8x8.
-    let bytes_per_tile = (8 * 8) / 2;
-    let num_tiles = tiles.data.len() / bytes_per_tile;
-
-    let tiles_w: u32 = 16;
-    let tiles_h: u32 = num_tiles as u32 / tiles_w;
-
-    let mut imgbuf = image::ImageBuffer::new(tiles_w * 8, tiles_h * 8);
-    for (_, _, pixel) in imgbuf.enumerate_pixels_mut() {
-        *pixel = image::Rgb([0, 0, 0]);
-    }
-
-    for tile_y in 0..tiles_h {
-        for tile_x in 0..tiles_w {
-            let img_x = tile_x * 8;
-            let img_y = tile_y * 8;
-            let tile_num = tile_y * tiles_w + tile_x;
-
-            let tile_data = &tiles.data[(tile_num as usize * bytes_per_tile)..];
-            for y in 0..8 {
-                for x in 0..8 {
-                    let val = get_pixel(tile_data, x, y) << 4;
-                    *imgbuf.get_pixel_mut(img_x + x, img_y + y) = image::Rgb([val, val, val]);
-                }
-            }
-        }
-    }
-
-    imgbuf.save(format!("tiles/{:06x}.png", addr)).unwrap();
-}
-
 fn main() -> Result<(), Error> {
     let opt = Opt::from_args();
     let mut f = File::open(opt.rom)?;
@@ -269,8 +227,21 @@ fn main() -> Result<(), Error> {
         );
     }
 
-    for (addr, tiles) in &sm.tiles {
-        render_tiles(addr, tiles);
+    //for (addr, tiles) in &sm.tiles {
+    //    render_tiles(addr, tiles);
+    //}
+
+    let cre_addr = super_metroid::rom_addr_to_snes!(super_metroid::rommap::CRE_TILES);
+    let cre_tiles = &sm.tiles.get(&cre_addr).unwrap();
+
+    for (i, set) in sm.tile_sets.iter().enumerate() {
+        let r = super_metroid::graphics::TileRenderer::new(
+            cre_tiles,
+            sm.tiles.get(&set.tiles_ptr).unwrap(),
+        )?;
+        let img = r.render_graphics_sheet()?;
+        img.save(format!("tileset/{:02x}_graphics_sheet.png", i))
+            .unwrap();
     }
 
     for (addr, table) in &sm.tile_tables {
