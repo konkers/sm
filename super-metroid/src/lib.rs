@@ -301,8 +301,31 @@ pub struct Tiles {
 }
 
 #[derive(Debug, Serialize)]
+pub struct TileTableEntry {
+    index: u16,
+    palette: u8,
+    priority: bool,
+    flip_h: bool,
+    flip_v: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct TileTable {
-    pub data: Vec<u8>,
+    pub entries: Vec<TileTableEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+pub const PALETTE_ENTRIES: usize = 16 * 8;
+
+#[derive(Debug, Serialize)]
+pub struct Palette {
+    colors: Vec<Color>,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,6 +336,7 @@ pub struct SuperMetroidData {
     pub tile_sets: Vec<TileSetEntry>,
     pub tiles: HashMap<u32, Tiles>,
     pub tile_tables: HashMap<u32, TileTable>,
+    pub palettes: HashMap<u32, Palette>,
 }
 
 struct Loader<'a> {
@@ -333,6 +357,7 @@ impl<'a> Loader<'a> {
                 tile_sets: Vec::new(),
                 tiles: HashMap::new(),
                 tile_tables: HashMap::new(),
+                palettes: HashMap::new(),
             },
         };
         loader
@@ -687,8 +712,45 @@ impl<'a> Loader<'a> {
         let rom_addr = snes_to_rom_addr!(addr);
         let data = compression::decompress(&self.rom_data[(rom_addr as usize)..])?;
 
-        self.sm.tile_tables.insert(addr, TileTable { data: data });
+        let num_entries = data.len() / 2;
+        let mut entries = Vec::with_capacity(num_entries);
+        let mut r = Cursor::new(data);
+        for _ in 0..num_entries {
+            let v = r.read_u16::<LittleEndian>()?;
+            entries.push(TileTableEntry {
+                index: v & 0x3ff,
+                palette: ((v >> 10) & 0x7) as u8,
+                priority: (v & (1 << 13)) != 0,
+                flip_h: (v & (1 << 14)) != 0,
+                flip_v: (v & (1 << 15)) != 0,
+            });
+        }
 
+        self.sm
+            .tile_tables
+            .insert(addr, TileTable { entries: entries });
+
+        Ok(())
+    }
+
+    fn load_palette(self: &mut Self, addr: u32) -> Result<(), Error> {
+        if self.sm.palettes.contains_key(&addr) {
+            return Ok(());
+        }
+
+        let rom_addr = snes_to_rom_addr!(addr);
+        let data = compression::decompress(&self.rom_data[(rom_addr as usize)..])?;
+        let mut r = Cursor::new(&data);
+        let mut colors = Vec::with_capacity(PALETTE_ENTRIES);
+        for _ in 0..PALETTE_ENTRIES {
+            let val = r.read_u16::<LittleEndian>()?;
+            colors.push(Color {
+                r: (((val >> 0) & 0x1f) << 3) as u8,
+                g: (((val >> 5) & 0x1f) << 3) as u8,
+                b: (((val >> 10) & 0x1f) << 3) as u8,
+            });
+        }
+        self.sm.palettes.insert(addr, Palette { colors: colors });
         Ok(())
     }
 
@@ -712,6 +774,7 @@ impl<'a> Loader<'a> {
         for entry in tile_sets {
             self.load_tiles(entry.tiles_ptr)?;
             self.load_tile_table(entry.tile_table_ptr)?;
+            self.load_palette(entry.palette_ptr)?;
         }
         self.load_tiles(rom_addr_to_snes!(rommap::CRE_TILES))?;
         self.load_tile_table(rom_addr_to_snes!(rommap::CRE_TILE_TABLE))?;

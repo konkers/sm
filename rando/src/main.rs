@@ -219,34 +219,30 @@ fn main() -> Result<(), Error> {
             }
         }
     }
-
-    for entry in &sm.tile_sets {
-        println!(
-            "{:06X}, {:06X}, {:06X}",
-            entry.tile_table_ptr, entry.tiles_ptr, entry.palette_ptr
-        );
-    }
-
-    //for (addr, tiles) in &sm.tiles {
-    //    render_tiles(addr, tiles);
-    //}
-
     let cre_addr = super_metroid::rom_addr_to_snes!(super_metroid::rommap::CRE_TILES);
     let cre_tiles = &sm.tiles.get(&cre_addr).unwrap();
+
+    let cre_table_addr = super_metroid::rom_addr_to_snes!(super_metroid::rommap::CRE_TILE_TABLE);
+    let cre_table = &sm.tile_tables.get(&cre_table_addr).unwrap();
 
     for (i, set) in sm.tile_sets.iter().enumerate() {
         let r = super_metroid::graphics::TileRenderer::new(
             cre_tiles,
             sm.tiles.get(&set.tiles_ptr).unwrap(),
+            sm.palettes.get(&set.palette_ptr).unwrap(),
+            cre_table,
+            sm.tile_tables.get(&set.tile_table_ptr).unwrap(),
         )?;
         let img = r.render_graphics_sheet()?;
         img.save(format!("tileset/{:02x}_graphics_sheet.png", i))
             .unwrap();
+        let img = r.render_palette()?;
+        img.save(format!("tileset/{:02x}_pallete.png", i)).unwrap();
+        let img = r.render_tile_table()?;
+        img.save(format!("tileset/{:02x}_tile_table.png", i))
+            .unwrap();
     }
 
-    for (addr, table) in &sm.tile_tables {
-        println!("{:06x}:{}", addr, table.data.len());
-    }
     // Build up edges graph for dot.
     let mut edges = Edges {
         sm: sm,
