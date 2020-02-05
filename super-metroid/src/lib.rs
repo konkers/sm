@@ -84,7 +84,8 @@ pub enum StateCondition {
     HasSpeedBooster,
 }
 
-#[derive(Debug, FromPrimitive, Serialize)]
+#[derive(Clone, Copy, Debug, FromPrimitive, Serialize)]
+#[repr(u8)]
 pub enum TileSet {
     UpperCrateria = 0x00,
     RedCrateria = 0x01,

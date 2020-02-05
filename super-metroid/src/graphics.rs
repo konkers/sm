@@ -1,6 +1,6 @@
 use failure::{format_err, Error};
 
-use super::{Color, Palette, TileTable, Tiles, PALETTE_ENTRIES};
+use super::{Color, Palette, RoomData, RoomMdb, TileTable, TileTableEntry, Tiles, PALETTE_ENTRIES};
 
 pub const CRE_INDEX_START: u16 = 0x280;
 pub const TILE_H: usize = 8;
@@ -86,7 +86,7 @@ impl<'a> TileRenderer<'a> {
                 let val = Self::get_pixel(tile, src_x, src_y);
                 let color = &colors[val as usize];
                 *img.get_pixel_mut((x + x1) as u32, (y + y1) as u32) =
-                    image::Rgba([color.r, color.g, color.b, 0xff]);
+                    image::Rgba([color.r, color.g, color.b, if val == 0 { 0x0 } else { 0xff }]);
             }
         }
     }
@@ -195,6 +195,7 @@ impl<'a> TileRenderer<'a> {
 
         Ok(())
     }
+
     #[cfg(feature = "render")]
     pub fn render_tile_table(self: &Self) -> Result<image::RgbaImage, Error> {
         let num_entries = self.cre_table.entries.len() + self.sce_table.entries.len();
@@ -214,6 +215,94 @@ impl<'a> TileRenderer<'a> {
         let offset_y = self.cre_table.entries.len() / tiles_w * TILE_H;
         self.render_sub_table(&mut img, &self.sce_table, 0, offset_y)?;
 
+        Ok(img)
+    }
+
+    fn get_block_data(self: &Self, index: u16) -> Result<&[TileTableEntry], Error> {
+        let tile_index = index as usize * 4;
+        let cre_entries = self.cre_table.entries.len();
+        let sce_entries = self.sce_table.entries.len();
+        if tile_index < cre_entries {
+            Ok(&self.cre_table.entries[tile_index..])
+        } else if tile_index < (cre_entries + sce_entries) {
+            Ok(&self.sce_table.entries[(tile_index - cre_entries)..])
+        } else {
+            Err(format_err!("tile index 0x{:x} out of range", index))
+        }
+    }
+
+    #[cfg(feature = "render")]
+    pub fn render_block(
+        self: &Self,
+        img: &mut image::RgbaImage,
+        index: u16,
+        x: usize,
+        y: usize,
+        flip_h: bool,
+        flip_v: bool,
+    ) -> Result<(), Error> {
+        let block_data = self.get_block_data(index)?;
+
+        // there are the destination offsets for the x and y cooredinates of
+        // each sub tile.
+        let x_offsets = if flip_h { [8, 0, 8, 0] } else { [0, 8, 0, 8] };
+        let y_offsets = if flip_v { [8, 8, 0, 0] } else { [0, 0, 8, 8] };
+
+        for sub_tile in 0..4 {
+            let entry = &block_data[sub_tile]; //x_offsets[sub_tile].0 + y_offsets[sub_tile].0];
+            let tile = self.get_tile(entry.index)?;
+            Self::render_tile(
+                tile,
+                img,
+                &self.palette.colors[(entry.palette as usize * 16)..],
+                x + x_offsets[sub_tile],
+                y + y_offsets[sub_tile],
+                entry.flip_h ^ flip_h,
+                entry.flip_v ^ flip_v,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "render")]
+    pub fn render_room(
+        self: &Self,
+        state: usize,
+        mdb: &RoomMdb,
+        data: &RoomData,
+    ) -> Result<image::RgbaImage, Error> {
+        let block_h = 16;
+        let block_w = 16;
+        let super_block_h = 16;
+        let super_block_w = 16;
+        let img_w = (mdb.width as usize * (super_block_w * block_w)) as u32;
+        let img_h = (mdb.height as usize * (super_block_h * block_h)) as u32;
+        let room_blocks_w = mdb.width as usize * super_block_w;
+        let room_blocks_h = mdb.height as usize * super_block_h;
+
+        let mut img = image::RgbaImage::new(img_w, img_h);
+        for (_, _, pixel) in img.enumerate_pixels_mut() {
+            *pixel = image::Rgba([0, 0, 0, 0]);
+        }
+
+        for (i, block) in data.layer_1.iter().enumerate() {
+            let x = i % room_blocks_w;
+            let y = i / room_blocks_w;
+            if y >= room_blocks_h as usize {
+                // Bowling Alley and Double Chamber have too much data.  It is
+                // unclear why.
+                break;
+            }
+            self.render_block(
+                &mut img,
+                block.tile_index,
+                x * block_w,
+                y * block_h,
+                block.x_flip,
+                block.y_flip,
+            )?;
+        }
         Ok(img)
     }
 }

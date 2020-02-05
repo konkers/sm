@@ -2,6 +2,7 @@ use dot;
 use failure::Error;
 use num::FromPrimitive;
 use parse_int::parse;
+use regex::Regex;
 use serde_json;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -219,12 +220,14 @@ fn main() -> Result<(), Error> {
             }
         }
     }
+
     let cre_addr = super_metroid::rom_addr_to_snes!(super_metroid::rommap::CRE_TILES);
     let cre_tiles = &sm.tiles.get(&cre_addr).unwrap();
 
     let cre_table_addr = super_metroid::rom_addr_to_snes!(super_metroid::rommap::CRE_TILE_TABLE);
     let cre_table = &sm.tile_tables.get(&cre_table_addr).unwrap();
 
+    let mut renderers = Vec::new();
     for (i, set) in sm.tile_sets.iter().enumerate() {
         let r = super_metroid::graphics::TileRenderer::new(
             cre_tiles,
@@ -241,6 +244,23 @@ fn main() -> Result<(), Error> {
         let img = r.render_tile_table()?;
         img.save(format!("tileset/{:02x}_tile_table.png", i))
             .unwrap();
+        renderers.push(r);
+    }
+
+    let clean_file_re = Regex::new(r"[\./\\ ]").unwrap();
+    for (addr, room) in &sm.room_mdb {
+        for (i, state) in room.states.iter().enumerate() {
+            let renderer = renderers.get(state.data.tile_set as usize).unwrap();
+            let room_data = &sm.level_data.get(&state.data.level_data).unwrap();
+            let img = renderer.render_room(i, room, room_data)?;
+
+            let room_name = match room_names.get(&addr) {
+                Some(n) => format!("_{}", clean_file_re.replace_all(n, "_")),
+                None => "".to_string(),
+            };
+            img.save(format!("room/{:04x}_{}{}.png", addr, i, room_name))
+                .unwrap();
+        }
     }
 
     // Build up edges graph for dot.
