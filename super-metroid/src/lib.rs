@@ -1,6 +1,7 @@
 pub mod compression;
 pub mod graphics;
 pub mod rommap;
+mod util;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use failure::{format_err, Error};
