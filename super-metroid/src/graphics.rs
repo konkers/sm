@@ -161,6 +161,7 @@ impl<'a> TileRenderer<'a> {
         Ok(img)
     }
 
+    #[cfg(feature = "render")]
     fn render_sub_table(
         self: &Self,
         img: &mut image::RgbaImage,
