@@ -331,6 +331,41 @@ pub struct Palette {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Enemy {
+    tile_data_size: u16,
+    palette: u16,
+    health: u16,
+    damage: u16,
+    width: u16,
+    height: u16,
+    bank: u8,
+    hurt_ai_time: u8,
+    cry: u16,
+    boss_value: u16,
+    initialization_ai: u16,
+    parts_count: u16,
+    unused_0: u16,
+    main_ai: u16,
+    grapple_ai: u16,
+    hurt_ai: u16,
+    frozen_ai: u16,
+    x_ray_ai: u16,
+    death_animation: u16,
+    unused_1: u32,
+    power_bomb_reaction: u16,
+    unknown_ptr_0: u16,
+    unused_2: u32,
+    enemy_touch: u16,
+    enemy_shot: u16,
+    uknown_ptr_1: u16,
+    tile_data: u16,
+    layer: u8,
+    drop_chances: u16,
+    vulnerabilities: u16,
+    name: u16,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SuperMetroidData {
     pub room_mdb: HashMap<u16, RoomMdb>,
     pub level_data: HashMap<u32, RoomData>,
