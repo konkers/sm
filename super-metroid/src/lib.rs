@@ -12,6 +12,9 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
+use graphics::de_planar_tiles;
+use util::RomReader;
+
 macro_rules! is_bit_set {
     ($value:expr, $test:expr) => {
         ($value & $test) == $test
@@ -331,38 +334,45 @@ pub struct Palette {
 }
 
 #[derive(Debug, Serialize)]
+pub struct EnemyData {
+    pub tile_data_size: u16,
+    pub palette: u16,
+    pub health: u16,
+    pub damage: u16,
+    pub width: u16,
+    pub height: u16,
+    pub bank: u8,
+    pub hurt_ai_time: u8,
+    pub cry: u16,
+    pub boss_value: u16,
+    pub init_ai: u16,
+    pub parts_count: u16,
+    pub unused_0: u16,
+    pub main_ai: u16,
+    pub grapple_ai: u16,
+    pub hurt_ai: u16,
+    pub frozen_ai: u16,
+    pub x_ray_ai: u16,
+    pub death_animation: u16,
+    pub unused_1: u32,
+    pub power_bomb_reaction: u16,
+    pub unknown_ptr_0: u16,
+    pub unused_2: u32,
+    pub enemy_touch: u16,
+    pub enemy_shot: u16,
+    pub unknown_ptr_1: u16,
+    pub tile_data_ptr: u32,
+    pub layer: u8,
+    pub drop_chances_ptr: u16,    // bank B4
+    pub vulnerabilities_ptr: u16, // Bank B4
+    pub name_ptr: u16,            // Bank B4
+}
+
+#[derive(Debug, Serialize)]
 pub struct Enemy {
-    tile_data_size: u16,
-    palette: u16,
-    health: u16,
-    damage: u16,
-    width: u16,
-    height: u16,
-    bank: u8,
-    hurt_ai_time: u8,
-    cry: u16,
-    boss_value: u16,
-    initialization_ai: u16,
-    parts_count: u16,
-    unused_0: u16,
-    main_ai: u16,
-    grapple_ai: u16,
-    hurt_ai: u16,
-    frozen_ai: u16,
-    x_ray_ai: u16,
-    death_animation: u16,
-    unused_1: u32,
-    power_bomb_reaction: u16,
-    unknown_ptr_0: u16,
-    unused_2: u32,
-    enemy_touch: u16,
-    enemy_shot: u16,
-    uknown_ptr_1: u16,
-    tile_data: u16,
-    layer: u8,
-    drop_chances: u16,
-    vulnerabilities: u16,
-    name: u16,
+    pub addr: u16,
+    pub data: EnemyData,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +384,7 @@ pub struct SuperMetroidData {
     pub tiles: HashMap<u32, Tiles>,
     pub tile_tables: HashMap<u32, TileTable>,
     pub palettes: HashMap<u32, Palette>,
+    pub enemies: HashMap<u16, Enemy>,
 }
 
 struct Loader<'a> {
@@ -395,6 +406,7 @@ impl<'a> Loader<'a> {
                 tiles: HashMap::new(),
                 tile_tables: HashMap::new(),
                 palettes: HashMap::new(),
+                enemies: HashMap::new(),
             },
         };
         loader
@@ -681,64 +693,10 @@ impl<'a> Loader<'a> {
         let rom_addr = snes_to_rom_addr!(addr);
         let mut data = compression::decompress(&self.rom_data[(rom_addr as usize)..])?;
 
-        Self::de_planar_tiles(&mut data);
+        de_planar_tiles(&mut data);
         self.sm.tiles.insert(addr, Tiles { data: data });
 
         Ok(())
-    }
-
-    // SNES tiles are packed really oddly.
-    // From: https://mrclick.zophar.net/TilEd/download/consolegfx.txt
-    //
-    // 4BPP SNES/PC Engine
-    //  Colors Per Tile - 0-15
-    //  Space Used - 4 bits per pixel.  32 bytes for a 8x8 tile.
-    //
-    //  Note: This is a tiled, planar bitmap format.
-    //  Each pair represents one byte
-    //  Format:
-    //
-    //  [r0, bp1], [r0, bp2], [r1, bp1], [r1, bp2], [r2, bp1], [r2, bp2], [r3, bp1], [r3, bp2]
-    //  [r4, bp1], [r4, bp2], [r5, bp1], [r5, bp2], [r6, bp1], [r6, bp2], [r7, bp1], [r7, bp2]
-    //  [r0, bp3], [r0, bp4], [r1, bp3], [r1, bp4], [r2, bp3], [r2, bp4], [r3, bp3], [r3, bp4]
-    //  [r4, bp3], [r4, bp4], [r5, bp3], [r5, bp4], [r6, bp3], [r6, bp4], [r7, bp3], [r7, bp4]
-    //
-    //  Short Description:
-    //
-    //  Bitplanes 1 and 2 are stored first, intertwined row by row.  Then bitplanes 3 and 4
-    //  are stored, intertwined row by row.
-    fn get_pixel(data: &[u8], x: u32, y: u32) -> u8 {
-        let x_shift = (7 - x) as u8;
-        let mut b = 0;
-        for bit in 0..4 {
-            let offset = y * 2 + (bit & 0x1) + ((bit >> 1) * 16);
-            if (data[offset as usize] & (1 << x_shift)) != 0 {
-                b |= 1 << bit;
-            }
-        }
-        b
-    }
-    fn de_planar_tiles(data: &mut [u8]) {
-        const BYTES_PER_TILE: usize = (8 * 8) / 2;
-        let num_tiles = data.len() / BYTES_PER_TILE;
-
-        for tile_num in 0..num_tiles {
-            let tile_data = &mut data[(tile_num as usize * BYTES_PER_TILE)..];
-
-            let mut new_data = [0; BYTES_PER_TILE];
-
-            for y in 0..8 {
-                for x in 0..8 {
-                    let val = Self::get_pixel(tile_data, x, y);
-                    new_data[(y * 4 + x / 2) as usize] |=
-                        if x & 0x1 == 0x1 { val << 4 } else { val }
-                }
-            }
-
-            for i in 0..BYTES_PER_TILE {
-                tile_data[i] = new_data[i];
-            }
-        }
     }
 
     fn load_tile_table(self: &mut Self, addr: u32) -> Result<(), Error> {
@@ -791,6 +749,78 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
+    fn load_enemy(self: &Self, r: &mut RomReader) -> Result<Option<Enemy>, Error> {
+        let (addr, tile_data_size) = loop {
+            let addr = r.cur_address();
+            let d = r.read_u16::<LittleEndian>()?;
+            // Enemy is followed by 0xff bytes.
+            if d == 0xffff {
+                return Ok(None);
+            }
+
+            // There are 20 bytes of 0x02 in the middle of the enemy list.
+            // Since there are no enemies with a tile_data_size of 0x0202,
+            // we can just skip over these bytes.
+            if d != 0x0202 {
+                break (addr, d);
+            }
+        };
+        let data = EnemyData {
+            tile_data_size: tile_data_size,                     // 00
+            palette: r.read_u16::<LittleEndian>()?,             // 02
+            health: r.read_u16::<LittleEndian>()?,              // 04
+            damage: r.read_u16::<LittleEndian>()?,              // 06
+            width: r.read_u16::<LittleEndian>()?,               // 08
+            height: r.read_u16::<LittleEndian>()?,              // 0A
+            bank: r.read_u8()?,                                 // 0C
+            hurt_ai_time: r.read_u8()?,                         // 0D
+            cry: r.read_u16::<LittleEndian>()?,                 // 0E
+            boss_value: r.read_u16::<LittleEndian>()?,          // 10
+            init_ai: r.read_u16::<LittleEndian>()?,             // 12
+            parts_count: r.read_u16::<LittleEndian>()?,         // 14
+            unused_0: r.read_u16::<LittleEndian>()?,            // 16
+            main_ai: r.read_u16::<LittleEndian>()?,             // 18
+            grapple_ai: r.read_u16::<LittleEndian>()?,          // 1A
+            hurt_ai: r.read_u16::<LittleEndian>()?,             // 1C
+            frozen_ai: r.read_u16::<LittleEndian>()?,           // 1E
+            x_ray_ai: r.read_u16::<LittleEndian>()?,            // 20
+            death_animation: r.read_u16::<LittleEndian>()?,     // 22
+            unused_1: r.read_u32::<LittleEndian>()?,            // 24
+            power_bomb_reaction: r.read_u16::<LittleEndian>()?, // 28
+            unknown_ptr_0: r.read_u16::<LittleEndian>()?,       // 2A
+            unused_2: r.read_u32::<LittleEndian>()?,            // 2C
+            enemy_touch: r.read_u16::<LittleEndian>()?,         // 30
+            enemy_shot: r.read_u16::<LittleEndian>()?,          // 32
+            unknown_ptr_1: r.read_u16::<LittleEndian>()?,       // 34
+            tile_data_ptr: r.read_u24::<LittleEndian>()?,       // 36
+            layer: r.read_u8()?,                                // 39
+            drop_chances_ptr: r.read_u16::<LittleEndian>()?,    // 3A
+            vulnerabilities_ptr: r.read_u16::<LittleEndian>()?, // 3C
+            name_ptr: r.read_u16::<LittleEndian>()?,            // 3E
+        };
+        let name = if data.name_ptr != 0x0000 {
+            let name_addr = rom_addr!(0xb4, data.name_ptr);
+            std::str::from_utf8(&self.rom_data[name_addr..(name_addr + 10)])?
+        } else {
+            ""
+        };
+
+        Ok(Some(Enemy {
+            addr: rom_addr_to_snes16!(addr),
+            data: data,
+            name: name.to_string(),
+        }))
+    }
+
+    fn load_enemies(self: &mut Self) -> Result<(), Error> {
+        let mut r = RomReader::new(self.rom_data, rommap::ENEMY_TABLE_START);
+        while let Some(enemy) = self.load_enemy(&mut r)? {
+            self.sm.enemies.insert(enemy.addr, enemy);
+        }
+
+        Ok(())
+    }
+
     pub fn load(mut self: Self) -> Result<SuperMetroidData, Error> {
         while !self.rooms_to_check.is_empty() {
             let room_ptr = *(self.rooms_to_check.iter().next().unwrap());
@@ -815,6 +845,8 @@ impl<'a> Loader<'a> {
         }
         self.load_tiles(rom_addr_to_snes!(rommap::CRE_TILES))?;
         self.load_tile_table(rom_addr_to_snes!(rommap::CRE_TILE_TABLE))?;
+
+        self.load_enemies()?;
 
         Ok(self.sm)
     }

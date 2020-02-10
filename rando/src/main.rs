@@ -1,5 +1,5 @@
 use dot;
-use failure::Error;
+use failure::{format_err, Error};
 use num::FromPrimitive;
 use parse_int::parse;
 use regex::Regex;
@@ -12,7 +12,11 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
-use super_metroid;
+use super_metroid::{
+    self,
+    graphics::{BYTES_PER_TILE, TILE_H, TILE_W},
+    Color,
+};
 
 mod smjsondata;
 
@@ -173,6 +177,75 @@ fn load_regions() -> Result<HashMap<String, smjsondata::Root>, Error> {
     Ok(map)
 }
 
+pub fn get_pixel(data: &[u8], x: usize, y: usize) -> u8 {
+    let b = data[(y * 4 + x / 2) as usize];
+    if x & 0x1 == 0x1 {
+        b >> 4
+    } else {
+        b & 0xf
+    }
+}
+
+pub fn render_tile(
+    tile: &[u8],
+    img: &mut image::RgbaImage,
+    colors: &[Color],
+    x: usize,
+    y: usize,
+    flip_h: bool,
+    flip_v: bool,
+) {
+    assert!(colors.len() >= 16);
+    for y1 in 0..TILE_H {
+        for x1 in 0..TILE_W {
+            let src_x = if flip_h { 7 - x1 } else { x1 };
+            let src_y = if flip_v { 7 - y1 } else { y1 };
+            let val = get_pixel(tile, src_x, src_y);
+            let color = &colors[val as usize];
+            *img.get_pixel_mut((x + x1) as u32, (y + y1) as u32) =
+                image::Rgba([color.r, color.g, color.b, if val == 0 { 0x0 } else { 0xff }]);
+        }
+    }
+}
+
+pub fn get_tile(index: u16, data: &[u8]) -> Result<&[u8], Error> {
+    let num_tiles = data.len() / BYTES_PER_TILE;
+    if index as usize >= num_tiles {
+        return Err(format_err!("tile {} out of range.", index));
+    }
+
+    Ok(&data[(index as usize * BYTES_PER_TILE)..])
+}
+pub fn render_graphics(data: &[u8]) -> Result<image::RgbaImage, Error> {
+    let num_tiles = data.len() / BYTES_PER_TILE;
+    let tiles_w = 16;
+    let tiles_h = num_tiles / tiles_w;
+    let img_w = (tiles_w * TILE_W) as u32;
+    let img_h = (tiles_h * TILE_H) as u32;
+
+    let mut colors = Vec::new();
+    for val in 0..16 {
+        colors.push(Color {
+            r: val << 4,
+            g: val << 4,
+            b: val << 4,
+        });
+    }
+
+    let mut img = image::RgbaImage::new(img_w, img_h);
+    for (_, _, pixel) in img.enumerate_pixels_mut() {
+        *pixel = image::Rgba([0, 0, 0, 0]);
+    }
+
+    for i in 0..num_tiles {
+        let tile = get_tile(i as u16, data)?;
+        let x = i % tiles_w * 8;
+        let y = i / tiles_w * 8;
+        render_tile(tile, &mut img, &colors, x, y, false, false);
+    }
+
+    Ok(img)
+}
 fn main() -> Result<(), Error> {
     let opt = Opt::from_args();
     let mut f = File::open(opt.rom)?;
@@ -247,6 +320,12 @@ fn main() -> Result<(), Error> {
         renderers.push(r);
     }
 
+    let tmp_addr = super_metroid::rom_addr!(0xad, 0xb600);
+    let mut tile_data = buffer[tmp_addr..(tmp_addr + 0x1000)].to_owned();
+    super_metroid::graphics::de_planar_tiles(&mut tile_data);
+    let img = render_graphics(&tile_data)?;
+    img.save(format!("test.png")).unwrap();
+
     let clean_file_re = Regex::new(r"[\./\\ ]").unwrap();
     for (addr, room) in &sm.room_mdb {
         for (i, state) in room.states.iter().enumerate() {
@@ -261,6 +340,19 @@ fn main() -> Result<(), Error> {
             img.save(format!("room/{:04x}_{}{}.png", addr, i, room_name))
                 .unwrap();
         }
+    }
+
+    let map: std::collections::BTreeMap<_, _> = sm.enemies.iter().collect();
+    for (addr, enemy) in &map {
+        println!(
+            "{:04x}: {:04x} {}x{} {:06x} '{}'",
+            addr,
+            &enemy.data.tile_data_size,
+            &enemy.data.width,
+            &enemy.data.height,
+            &enemy.data.tile_data_ptr,
+            &enemy.name
+        );
     }
 
     // Build up edges graph for dot.

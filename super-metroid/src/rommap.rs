@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! rom_addr {
     ($bank:expr, $offset:expr) => {
-        ((($bank - 0x80) << 15) as usize + ($offset - 0x8000) as usize)
+        (((($bank as usize) - 0x80) << 15) as usize + ($offset - 0x8000) as usize)
     };
 }
 
@@ -33,8 +33,8 @@ pub const TILESET_ENTRY_BANK: usize = 0x8f;
 pub const CRE_TILES: usize = rom_addr!(0xb9, 0x8000);
 pub const CRE_TILE_TABLE: usize = rom_addr!(0xb9, 0xa09d);
 
-pub const ENEMY_TABLE0_START: usize = rom_addr!(0xa0, 0xcebf);
-pub const ENEMY_TABLE1_START: usize = rom_addr!(0xa0, 0xf153);
+pub const ENEMY_TABLE_BANK: u8 = 0xa0;
+pub const ENEMY_TABLE_START: usize = rom_addr!(ENEMY_TABLE_BANK, 0xcebf);
 
 #[cfg(test)]
 mod tests {
