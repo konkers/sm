@@ -7,6 +7,59 @@ pub const TILE_H: usize = 8;
 pub const TILE_W: usize = 8;
 pub const BYTES_PER_TILE: usize = (TILE_H * TILE_W) / 2;
 
+// SNES tiles are packed really oddly.
+// From: https://mrclick.zophar.net/TilEd/download/consolegfx.txt
+//
+// 4BPP SNES/PC Engine
+//  Colors Per Tile - 0-15
+//  Space Used - 4 bits per pixel.  32 bytes for a 8x8 tile.
+//
+//  Note: This is a tiled, planar bitmap format.
+//  Each pair represents one byte
+//  Format:
+//
+//  [r0, bp1], [r0, bp2], [r1, bp1], [r1, bp2], [r2, bp1], [r2, bp2], [r3, bp1], [r3, bp2]
+//  [r4, bp1], [r4, bp2], [r5, bp1], [r5, bp2], [r6, bp1], [r6, bp2], [r7, bp1], [r7, bp2]
+//  [r0, bp3], [r0, bp4], [r1, bp3], [r1, bp4], [r2, bp3], [r2, bp4], [r3, bp3], [r3, bp4]
+//  [r4, bp3], [r4, bp4], [r5, bp3], [r5, bp4], [r6, bp3], [r6, bp4], [r7, bp3], [r7, bp4]
+//
+//  Short Description:
+//
+//  Bitplanes 1 and 2 are stored first, intertwined row by row.  Then bitplanes 3 and 4
+//  are stored, intertwined row by row.
+fn get_pixel(data: &[u8], x: u32, y: u32) -> u8 {
+    let x_shift = (7 - x) as u8;
+    let mut b = 0;
+    for bit in 0..4 {
+        let offset = y * 2 + (bit & 0x1) + ((bit >> 1) * 16);
+        if (data[offset as usize] & (1 << x_shift)) != 0 {
+            b |= 1 << bit;
+        }
+    }
+    b
+}
+pub fn de_planar_tiles(data: &mut [u8]) {
+    const BYTES_PER_TILE: usize = (8 * 8) / 2;
+    let num_tiles = data.len() / BYTES_PER_TILE;
+
+    for tile_num in 0..num_tiles {
+        let tile_data = &mut data[(tile_num as usize * BYTES_PER_TILE)..];
+
+        let mut new_data = [0; BYTES_PER_TILE];
+
+        for y in 0..8 {
+            for x in 0..8 {
+                let val = get_pixel(tile_data, x, y);
+                new_data[(y * 4 + x / 2) as usize] |= if x & 0x1 == 0x1 { val << 4 } else { val }
+            }
+        }
+
+        for i in 0..BYTES_PER_TILE {
+            tile_data[i] = new_data[i];
+        }
+    }
+}
+
 pub struct TileRenderer<'a> {
     num_tiles: usize,
     cre_tiles: usize,
